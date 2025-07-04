@@ -1,13 +1,27 @@
 #!/bin/bash
 
+# Set paths
+MODEL_PATH="./llava-v1.5-7b"
+IMAGE_FOLDER="/home/jinglong/.cache/kagglehub/datasets/hsankesara/flickr-image-dataset/versions/1/flickr30k_images/flickr30k_images"
+QUESTION_FILE="./data/flickr30k/question.json"
+ANSWERS_FILE="./data/flickr30k/answers/llava-v1.5-7b.jsonl"
+
+# Create answers directory if it doesn't exist
+mkdir -p ./data/flickr30k/answers
+
+# Generate question.json if it doesn't exist
+if [ ! -f "$QUESTION_FILE" ]; then
+    echo "Generating question.json file..."
+    python generate_flickr30k_questions.py
+fi
+
+echo "Running Flickr30k evaluation..."
 python -m llava.eval.model_caption_loader \
-    --model-path /your_data_path/ft_local/models/llava-v1.5-7b \
-    --question-file /dockerdata/data/flickr30k/question.json \
-    --image-folder /dockerdata/data/flickr30k/images/flickr30k-images \
-    --answers-file /dockerdata/data/flickr30k/answers/llava-v1.5-7b.jsonl \
+    --model-path $MODEL_PATH \
+    --question-file $QUESTION_FILE \
+    --image-folder $IMAGE_FOLDER \
+    --answers-file $ANSWERS_FILE \
     --temperature 0 \
     --conv-mode vicuna_v1
 
-python -m llava.eval.eval_textvqa \
-    --annotation-file /dockerdata/data/textvqa/TextVQA_0.5.1_val.json \
-    --result-file /dockerdata/data/textvqa/answers/llava-v1.5-13b.jsonl
+echo "Flickr30k evaluation completed!"

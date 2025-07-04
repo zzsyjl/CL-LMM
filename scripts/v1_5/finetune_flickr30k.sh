@@ -1,13 +1,13 @@
 #!/bin/bash
 
-deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
+deepspeed --include localhost:0,6,7 llava/train/train_mem.py \
     --deepspeed ./scripts/zero2.json \
-    --model_name_or_path /your_data_path/models/llava_v1_5_7b \
+    --model_name_or_path /home/data/nas_ssd/jinglong/Model-Tailor/llava-v1.5-7b \
     --version v1 \
-    --data_path /your_data_path/data/llava1.5_okvqa.json \
-    --image_folder /your_data_path/flickr30k/ \
-    --vision_tower /your_data_path/clip_vit_large_patch14_336 \
-    --pretrain_mm_mlp_adapter /your_data_path//models/llava_v1_5_7b/mm_projector.bin \
+    --data_path /home/data/nas_ssd/jinglong/Model-Tailor/data/llava1.5_flickr30k.json \
+    --image_folder /home/data/nas_ssd/jinglong/Model-Tailor \
+    --vision_tower /home/data/nas_ssd/jinglong/Model-Tailor/clip-vit-large-patch14-336 \
+    --pretrain_mm_mlp_adapter /home/data/nas_ssd/jinglong/Model-Tailor/llava-v1.5-7b/mm_projector.bin \
     --mm_projector_type mlp2x_gelu \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
@@ -16,7 +16,7 @@ deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
     --group_by_modality_length True \
     --bf16 False \
     --fp16 True \
-    --output_dir /your_model_path/  \
+    --output_dir /home/data/nas_ssd/jinglong/Model-Tailor/models/flickr30k_finetuned  \
     --num_train_epochs 1 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 4 \
@@ -35,4 +35,4 @@ deepspeed --include localhost:4,5,6,7 llava/train/train_mem.py \
     --gradient_checkpointing True \
     --dataloader_num_workers 4 \
     --lazy_preprocess True \
-    --report_to wandb
+    --report_to none

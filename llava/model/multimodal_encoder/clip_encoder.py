@@ -17,8 +17,6 @@ class CLIPVisionTower(nn.Module):
         if not delay_load:
             self.load_model()
         else:
-            if "openai" in self.vision_tower_name and "mnt" not in self.vision_tower_name:
-                self.vision_tower_name = self.vision_tower_name.replace("openai", "/your_data_path//models/openai")
             self.cfg_only = CLIPVisionConfig.from_pretrained(self.vision_tower_name)
 
     def load_model(self):
