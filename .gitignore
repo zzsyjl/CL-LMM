@@ -2,6 +2,7 @@
 clip-vit-large-patch14-336/
 llava-v1.5-7b/
 models/
+checkpoints/
 data/
 datasets/
 
@@ -9,6 +10,7 @@ datasets/
 playground.ipynb
 playground.py
 simple_gpu_occupier.py
+llava_demo.py
 
 # Weights & Biases
 wandb/

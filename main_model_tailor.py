@@ -77,6 +77,7 @@ class DataArguments:
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default="path of target image")
     image_aspect_ratio: str = 'pad'
+    image_processor: Optional[object] = field(default=None)
 
 
 @dataclass
@@ -197,7 +198,8 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
         weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
-        trainer.model.config.save_pretrained(output_dir)
+        if hasattr(trainer.model, 'config') and hasattr(trainer.model.config, 'save_pretrained') and not isinstance(trainer.model.config, torch.Tensor):
+            trainer.model.config.save_pretrained(output_dir)
 
         current_folder = output_dir.split('/')[-1]
         parent_folder = os.path.dirname(output_dir)
@@ -229,7 +231,7 @@ def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
     tokenizer: transformers.PreTrainedTokenizer,
     model: transformers.PreTrainedModel,
-):
+) -> None:
     """Resize tokenizer and embedding.
 
     Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
@@ -277,7 +279,7 @@ def _tokenize_fn(strings: Sequence[str],
     )
 
 
-def _mask_targets(target, tokenized_lens, speakers):
+def _mask_targets(target: torch.Tensor, tokenized_lens: List[int], speakers: List[str]) -> None:
     # cur_idx = 0
     cur_idx = tokenized_lens[0]
     tokenized_lens = tokenized_lens[1:]
@@ -288,7 +290,7 @@ def _mask_targets(target, tokenized_lens, speakers):
         cur_idx += tokenized_len
 
 
-def _add_speaker_and_signal(header, source, get_conversation=True):
+def _add_speaker_and_signal(header: str, source: List[Dict], get_conversation: bool = True) -> str:
     """Add speaker and start/end signal on each round."""
     BEGIN_SIGNAL = "### "
     END_SIGNAL = "\n"
@@ -310,25 +312,27 @@ def _add_speaker_and_signal(header, source, get_conversation=True):
 
 
 def preprocess_multimodal(
-    sources: Sequence[str],
-    data_args: DataArguments
-) -> Dict:
+    sources: Sequence[Dict],
+    data_args: DataArguments,
+    model_args: ModelArguments
+) -> Sequence[Dict]:
     is_multimodal = data_args.is_multimodal
     if not is_multimodal:
         return sources
 
     for source in sources:
         for sentence in source:
-            if DEFAULT_IMAGE_TOKEN in sentence['value']:
-                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
-                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
-                sentence['value'] = sentence['value'].strip()
-                if "mmtag" in conversation_lib.default_conversation.version:
-                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
-            replace_token = DEFAULT_IMAGE_TOKEN
-            if data_args.mm_use_im_start_end:
-                replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
-            sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
+            if isinstance(sentence, dict) and 'value' in sentence:
+                if DEFAULT_IMAGE_TOKEN in sentence['value']:
+                    sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+                    sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                    sentence['value'] = sentence['value'].strip()
+                    if "mmtag" in conversation_lib.default_conversation.version:
+                        sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '<Image>' + DEFAULT_IMAGE_TOKEN + '</Image>')
+                replace_token = DEFAULT_IMAGE_TOKEN
+                if model_args.mm_use_im_start_end:
+                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+                sentence["value"] = sentence["value"].replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
     return sources
 
@@ -358,7 +362,10 @@ def preprocess_llama_2(
     # Tokenize conversations
 
     if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+        input_ids_list = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+        # Ensure all items are tensors before stacking
+        input_ids_list = [tensor if isinstance(tensor, torch.Tensor) else torch.tensor(tensor) for tensor in input_ids_list]
+        input_ids = torch.stack(input_ids_list, dim=0)
     else:
         input_ids = tokenizer(
             conversations,
@@ -375,7 +382,8 @@ def preprocess_llama_2(
     # Mask targets
     sep = "[/INST] "
     for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        total_len = int(target.ne(pad_token_id).sum())
 
         rounds = conversation.split(conv.sep2)
         cur_len = 1
@@ -440,7 +448,10 @@ def preprocess_v1(
     # Tokenize conversations
 
     if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+        input_ids_list = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+        # Ensure all items are tensors before stacking
+        input_ids_list = [tensor if isinstance(tensor, torch.Tensor) else torch.tensor(tensor) for tensor in input_ids_list]
+        input_ids = torch.stack(input_ids_list, dim=0)
     else:
         input_ids = tokenizer(
             conversations,
@@ -457,7 +468,8 @@ def preprocess_v1(
     # Mask targets
     sep = conv.sep + conv.roles[1] + ": "
     for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        total_len = int(target.ne(pad_token_id).sum())
 
         rounds = conversation.split(conv.sep2)
         cur_len = 1
@@ -519,14 +531,18 @@ def preprocess_mpt(
         conversations.append(conv.get_prompt())
 
     # Tokenize conversations
-    input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    input_ids_list = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    # Ensure all items are tensors before stacking
+    input_ids_list = [tensor if isinstance(tensor, torch.Tensor) else torch.tensor(tensor) for tensor in input_ids_list]
+    input_ids = torch.stack(input_ids_list, dim=0)
     targets = input_ids.clone()
     assert conv.sep_style == conversation_lib.SeparatorStyle.MPT
 
     # Mask targets
     sep = conv.sep + conv.roles[1]
     for conversation, target in zip(conversations, targets):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+        pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+        total_len = int(target.ne(pad_token_id).sum())
 
         rounds = conversation.split(conv.sep)
         re_rounds = [conv.sep.join(rounds[:3])] # system + user + gpt
@@ -586,7 +602,7 @@ def preprocess_plain(
 
 
 def preprocess(
-    sources: Sequence[str],
+    sources: Sequence[Dict],
     tokenizer: transformers.PreTrainedTokenizer,
     has_image: bool = False
 ) -> Dict:
@@ -638,7 +654,8 @@ class LazySupervisedDataset(Dataset):
 
     def __init__(self, data_path: str,
                  tokenizer: transformers.PreTrainedTokenizer,
-                 data_args: DataArguments):
+                 data_args: DataArguments,
+                 model_args: ModelArguments):
         super(LazySupervisedDataset, self).__init__()
         list_data_dict = json.load(open(data_path, "r"))
 
@@ -646,6 +663,7 @@ class LazySupervisedDataset(Dataset):
         self.tokenizer = tokenizer
         self.list_data_dict = list_data_dict
         self.data_args = data_args
+        self.model_args = model_args
 
     def __len__(self):
         return len(self.list_data_dict)
@@ -696,7 +714,8 @@ class LazySupervisedDataset(Dataset):
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
-                self.data_args)
+                self.data_args,
+                self.model_args) # Pass model_args here
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
         data_dict = preprocess(
@@ -726,19 +745,21 @@ class DataCollatorForSupervisedDataset(object):
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances]
                                   for key in ("input_ids", "labels"))
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids,
             batch_first=True,
-            padding_value=self.tokenizer.pad_token_id)
+            padding_value=pad_token_id)
         labels = torch.nn.utils.rnn.pad_sequence(labels,
                                                  batch_first=True,
                                                  padding_value=IGNORE_INDEX)
         input_ids = input_ids[:, :self.tokenizer.model_max_length]
         labels = labels[:, :self.tokenizer.model_max_length]
+        pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id
         batch = dict(
             input_ids=input_ids,
             labels=labels,
-            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+            attention_mask=input_ids.ne(pad_token_id),
         )
 
         if 'image' in instances[0]:
@@ -756,7 +777,8 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
     """Make dataset and collator for supervised fine-tuning."""
     train_dataset = LazySupervisedDataset(tokenizer=tokenizer,
                                 data_path=data_args.data_path,
-                                data_args=data_args)
+                                data_args=data_args,
+                                model_args=ModelArguments()) # Pass model_args here
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
@@ -790,9 +812,19 @@ def train():
 
     if model_args.freeze_backbone:
         model.model.requires_grad_(False)
-    data_args.image_processor = model.model.vision_tower.image_processor
-    data_args.is_multimodal = True
-    data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
+    # Initialize vision modules if vision tower is provided
+    if model_args.vision_tower is not None:
+        model.get_model().initialize_vision_modules(
+            model_args=model_args,
+            fsdp=None
+        )
+        
+        vision_tower = model.get_vision_tower()
+        vision_tower.to(dtype=compute_dtype, device=training_args.device)
+        
+        data_args.image_processor = vision_tower.image_processor
+        data_args.is_multimodal = True
+        data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
 
 
     data_module = make_supervised_data_module(tokenizer=tokenizer,
@@ -896,7 +928,7 @@ def train():
         handles = []
         for name in gpts:
             handles.append(subset[name].register_forward_hook(add_batch(name)))
-        for j in range(int(nsamples)):
+        for j in inps.keys():
             if len(name)!=0:
                 # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask[j], encoder_hidden_states=encoder_inps[j].unsqueeze(0), encoder_attention_mask=encoder_attention_mask)[0]
                 outs[j] = layer(inps[j])[0]
@@ -913,7 +945,7 @@ def train():
             gpts[name].fasterprune(sparsity_level, prunen=0, prunem=0, percdamp=0.01, blocksize=128)
             gpts[name].free()
 
-        for j in range(int(nsamples)):
+        for j in inps.keys():
             if len(name) != 0:
                 # outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask[j], encoder_hidden_states=encoder_inps[j].unsqueeze(0), encoder_attention_mask=encoder_attention_mask)[0]
                 outs[j] = layer(inps[j])[0]
